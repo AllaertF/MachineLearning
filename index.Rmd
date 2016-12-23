@@ -1,0 +1,126 @@
+---
+title: "Machine learning project - Dumbbell lifting exercise"
+author: "Flor Allaert"
+date: "22 Dec 2016"
+output: html_document
+---
+
+## Abstract
+Using data from accelerometers in e.g. smartphones or attached to a person's body, Human Activity Recognition (HAR) typically aims to identify the type of action that was performed by a person. In this work we use accelerometer data from a dumbbell lifting exercise, not to identify _which_ action was performed, but to predict _how well_ it was performed. For this purpose we use a random forest model and train it on a subset of the total dataset. We find that our model is significantly biased if not all the test subjects are included in the training set, indicating that there are significant differences in the manner in which they performed the exercise. On the other hand, with all the participants included in the training set, our model predictions for the test set are 100% accurate and the estimated out-of-sample error rate 0.42%.  
+<br>
+
+## Exploring the data
+For this project we make use of the "Weight Lifting Exercises Dataset" from Velloso et al. (2013) that is publicly available at [Groupware@LES website](http://groupware.les.inf.puc-rio.br/har). Training and test data are already provided separately.  
+Six test subjects were asked to perform 10 repetitions of a unilateral dumbbell biceps curl in five different ways: first correctly (class A) and then incorrectly in four different ways (classes B to E). At each repetition, acceleration, gyroscope and magnetometer data were recorded from the subject's belt, arm, forearm and dumbbell at a sampling rate of 45 Hz. If we load the data and check the dimensions of the training set,
+
+```{r load_packages, warning=FALSE, message=FALSE, echo=FALSE}
+library(caret)
+library(randomForest)
+```
+
+```{r load_data, echo=FALSE}
+training <- read.csv("pml-training.csv", na.strings=c("NA","#DIV/0!",""),
+                     stringsAsFactors = FALSE)
+testing <- read.csv("pml-testing.csv", na.strings=c("NA","#DIV/0!",""),
+                    stringsAsFactors = FALSE)
+dims <- dim(training)
+print(dims)
+```
+
+<br>
+we see that it contains `r dims[1]` rows (separate observations) and `r dims[2]` columns. The observations are further grouped into time windows and many of the columns represent statistics (min, max, mean, standard deviation, etc.) of the observed variables determined in each time window. For these columns only one row per time window contains a value, while the rest contains NA's. Moreover, in the test dataset these columns only contain NA's. They are therefore not relevant in the current analysis. We remove any column that contains more than 50% NA's from both the training and the test sets. Columns 1 and 3-7 only contain information about the time and time window of the observations and are also not relevant for our purposes. They are also removed from the datasets. Finally we change the outcome variable ("classe") to a factor in the training data.
+
+```{r clean_data, echo=TRUE}
+# Remove irrelevant columns from the datasets.
+nvar <- dim(training)[2]
+nobs <- dim(training)[1]
+bad <- c(1,3,4,5,6,7)
+for(i in 1:nvar){
+    if(sum(is.na(training[,i]))/nobs > 0.5) {bad <- c(bad,i)}
+}
+training <- training[,-bad]
+testing <- testing[,-bad]
+
+# Change classe variable to a factor
+training$classe <- as.factor(training$classe)
+```
+<br>
+
+## Building the model
+We use a random forest model to predict the class of execution for the observations in the test set. Random forests have the advantage that each tree is built using a (different) bootstrap subsample of the training data. By putting the unused (or out-of-bag, OOB) observations for each tree down that tree to obtain a classification and repeating this process for all trees in the forest, a reliable and unbiased estimate of the out-of-sample or OOB error can be obtained without additional cross validation.  
+<br>
+However, since the training set is very large, we can afford to split off a small subsample as validation set to verify the OOB error estimate. A logical way to do this would be to split off the data from one participant as validation set and use the remaining 5 participants as training data. When we build our model in this way, using the default settings,
+
+```{r, echo=TRUE, cache=TRUE}
+# Set the random seed and make the new training and validation
+# sets
+set.seed(12345)
+inVal_carl <- training$user_name=="carlitos"
+subTraining_carl <- training[!inVal_carl,-1]
+valid_carl <- training[inVal_carl,-1]
+
+# Build the model
+fitrf_carl <- randomForest(classe ~ ., data=subTraining_carl, importance=TRUE)
+
+# Print the model
+print(fitrf_carl)
+```
+```{r, echo=FALSE}
+pred_carl <- predict(fitrf_carl, newdata=valid_carl, type="response")
+cm_carl <- confusionMatrix(pred_carl, valid_carl$classe)
+err <- round(100*(1-cm_carl$overall["Accuracy"]),2)
+```
+
+<br>
+we get an estimated OOB error rate of 0.24%. However, if we build a prediction for the validation set and verify this against the real values of the 'classe' variable, our model clearly performs very badly and the real error rate (`r err`%) is much larger than the estimated value:
+
+```{r, echo=FALSE}
+print(cm_carl$table)
+```
+
+<br>
+To get a better idea of what is going on, we make a new validation set with the same number of observations, but this time randomly sampled from the original training data, and build a second model.
+
+```{r, echo=TRUE, cache=TRUE}
+# Make new training and validation sets
+inVal_rand <- sample(1:19622, sum(inVal_carl), replace=FALSE)
+subTraining_rand <- training[-inVal_rand,-1]
+valid_rand <- training[inVal_rand, -1]
+
+# Build a new random forest model and print it
+fitrf_rand <- randomForest(classe ~ ., data=subTraining_rand, importance=TRUE)
+print(fitrf_rand)
+```
+```{r, echo=FALSE}
+pred_rand <- predict(fitrf_rand, newdata=valid_rand, type="response")
+cm_rand <- confusionMatrix(pred_rand, valid_rand$classe)
+err2 <- round(100*(1-cm_rand$overall["Accuracy"]),2)
+```
+
+<br>
+Verifying the predictions of this model on the new validation set, we see that it performs very well. The error rate on the validation set (`r err2`%) is even slightly smaller than the estimated value.
+
+```{r, echo=FALSE}
+print(cm_rand$table)
+```
+
+<br>
+This tells us that there are significant differences in the way that the inidividual participants performed the exercises, and reliable predictions for the complete test set can only be obtained if the model is trained with data from all the participants. __We therefore take our second model as the final one and use the most conservative of the obtained error rates (i.e. 0.42%) as our estimated out-of-sample error.__  
+<br>
+
+## Predictions on the test data
+We can now use our trained random forest model to predict how the dumbbell lift was performed for each of the observations in the test set:
+
+```{r predict, echo=TRUE}
+pred_test <- predict(fitrf_rand, newdata=testing, type="response")
+pred_test
+```
+<br>
+After taking the quiz we find that our model predictions are 100% accurate.  
+<br>
+
+## References
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+
+
